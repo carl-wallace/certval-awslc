@@ -1,0 +1,52 @@
+[package]
+name = "certval-awslc"
+version = "0.1.0-rc.1"
+description = """
+AWS-LC crypto provider for certval. Performs message digest calculation and certificate signature
+verification with AWS-LC through aws-lc-rs, including its FIPS-validated build, so certification
+path validation can use a validated module that ships inside the binary.
+"""
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/carl-wallace/certval-awslc"
+categories = ["cryptography"]
+keywords = ["x509", "certval", "aws-lc", "fips"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.88"
+include = ["src/**/*.rs", "README.md", "CHANGELOG.md", "LICENSE-APACHE", "LICENSE-MIT"]
+
+[features]
+default = ["non-fips"]
+# AWS-LC built from its ordinary source. Needs a C compiler only.
+non-fips = ["aws-lc-rs/non-fips"]
+# AWS-LC's FIPS module, built from the source its validation covers. Needs CMake and Go to build, and
+# is the validated module only where the build follows the module's security policy on an operating
+# environment its certificate lists. When both this and non-fips are enabled, aws-lc-rs uses this.
+fips = ["aws-lc-rs/fips"]
+# Enables certval's software ML-DSA implementation. The provider needs nothing from it, but without
+# it the ML-DSA tests have no software verdict to compare against.
+pqc = ["certval/pqc"]
+
+[dependencies]
+certval = { version = "0.2.0-rc.1", default-features = false, features = ["std", "rsa"] }
+
+aws-lc-rs = { version = "1.19.0", default-features = false, features = ["alloc"] }
+const-oid = { version = "0.10.2", features = ["db"] }
+der = { version = "0.8.1", features = ["alloc", "derive", "oid"] }
+spki = "0.8.0"
+
+log = "0.4.33"
+
+[dev-dependencies]
+x509-cert = { version = "0.3.0", features = ["hazmat"] }
+
+[package.metadata.docs.rs]
+# The fips feature needs CMake and Go, which docs.rs does not provide; the API is the same.
+features = ["pqc"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+# Uncomment while developing certval and this crate together: it redirects the crates.io dependency
+# above to the local checkout, so edits take effect without a publish. Leave it commented on anything
+# that is committed, or the build depends on a path that only exists here.
+# [patch.crates-io]
+# certval = { path = "../rust-pki/certval" }
