@@ -29,7 +29,9 @@ const RSA_BITS: std::ops::RangeInclusive<usize> = 2048..=8192;
 pub(crate) struct Choice<'a> {
     pub(crate) algorithm: &'static dyn VerificationAlgorithm,
     pub(crate) key: &'a [u8],
-    /// `None` for an algorithm with no digest form (ML-DSA signs the message itself).
+    /// `None` for an algorithm with no digest form (ML-DSA signs the message itself). Read only by the
+    /// digest interface, which a `fips` build does not implement.
+    #[cfg_attr(feature = "fips", allow(dead_code))]
     pub(crate) digest: Option<&'static digest::Algorithm>,
 }
 
