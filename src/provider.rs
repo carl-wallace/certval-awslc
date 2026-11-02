@@ -44,9 +44,12 @@ fn parse(choice: &Choice<'_>) -> Option<ParsedPublicKey> {
 
 /// The verdict certval expects once a parsed key has judged a signature.
 fn verdict(result: Result<(), aws_lc_rs::error::Unspecified>) -> certval::Result<()> {
-    result.map_err(|_| {
-        certval::Error::PathValidation(PathValidationStatus::SignatureVerificationFailure)
-    })
+    result
+        .map(|()| debug!("AWS-LC verified a signature"))
+        .map_err(|_| {
+            debug!("AWS-LC rejected a signature");
+            certval::Error::PathValidation(PathValidationStatus::SignatureVerificationFailure)
+        })
 }
 
 impl AwsLcCrypto {
