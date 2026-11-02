@@ -28,7 +28,7 @@ fips = ["aws-lc-rs/fips"]
 pqc = ["certval/pqc"]
 
 [dependencies]
-certval = { version = "0.2.0-rc.1", default-features = false, features = ["std", "rsa"] }
+certval = { version = "0.2.0-rc.1", default-features = false }
 
 aws-lc-rs = { version = "1.19.0", default-features = false, features = ["alloc"] }
 const-oid = { version = "0.10.2", features = ["db"] }
@@ -38,6 +38,9 @@ spki = "0.8.0"
 log = "0.4.33"
 
 [dev-dependencies]
+# certval's software RSA, which the tests compare this provider's verdicts against. A dev-dependency,
+# so the application, not this crate, decides which algorithms certval's software offers.
+certval = { version = "0.2.0-rc.1", default-features = false, features = ["rsa"] }
 x509-cert = { version = "0.3.0", features = ["hazmat"] }
 
 [package.metadata.docs.rs]
