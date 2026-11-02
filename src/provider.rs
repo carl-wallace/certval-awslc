@@ -7,7 +7,7 @@ use certval::{
     VerifySignatureMessage,
 };
 use der::asn1::BitString;
-use log::debug;
+use log::{debug, trace};
 use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
 
 /// A [`certval`] crypto provider backed by AWS-LC.
@@ -45,9 +45,9 @@ fn parse(choice: &Choice<'_>) -> Option<ParsedPublicKey> {
 /// The verdict certval expects once a parsed key has judged a signature.
 fn verdict(result: Result<(), aws_lc_rs::error::Unspecified>) -> certval::Result<()> {
     result
-        .map(|()| debug!("AWS-LC verified a signature"))
+        .map(|()| trace!("AWS-LC verified a signature"))
         .map_err(|_| {
-            debug!("AWS-LC rejected a signature");
+            trace!("AWS-LC rejected a signature");
             certval::Error::PathValidation(PathValidationStatus::SignatureVerificationFailure)
         })
 }

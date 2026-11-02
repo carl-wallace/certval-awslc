@@ -69,6 +69,8 @@ fn run_collection(family: &str, dir: &str) -> usize {
         digest.disagreements, digest.pairs
     );
 
+    assert_compared(family, &message, &digest);
+
     message.module_answered + digest.module_answered
 }
 
@@ -90,6 +92,10 @@ fn pss_platform_agrees_with_software() {
 /// AWS-LC verifies ML-DSA, so the platform must answer and agree with software.
 #[test]
 fn ml_dsa_is_answered() {
+    if !cfg!(feature = "pqc") {
+        println!("ML-DSA: skipped, built without pqc, so certval's software has no verdict to compare against");
+        return;
+    }
     let answered = run_family("ML-DSA", MLDSA_CERTS);
     if env(MLDSA_CERTS).is_some() {
         assert!(answered > 0, "AWS-LC answered no ML-DSA verification");
@@ -102,6 +108,10 @@ fn ml_dsa_is_answered() {
 /// variable may name several collections, separated as `PATH` is.
 #[test]
 fn slh_dsa_falls_through_to_software() {
+    if !cfg!(feature = "pqc") {
+        println!("SLH-DSA: skipped, built without pqc, so certval's software has no verdict to compare against");
+        return;
+    }
     let Some(dirs) = env(SLHDSA_CERTS) else {
         println!("SLH-DSA: skipped, {SLHDSA_CERTS} is not set");
         return;
