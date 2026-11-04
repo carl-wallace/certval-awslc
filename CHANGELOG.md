@@ -8,4 +8,4 @@ Initial release. Calculates SHA-1/224/256/384/512 digests and verifies RSA PKCS 
 RSASSA-PSS, ECDSA and pure ML-DSA certificate signatures through AWS-LC (aws-lc-rs), through all
 three of certval's hashing and verification interfaces. The `fips` feature builds AWS-LC's FIPS
 module, where the digest interface is declined; `AwsLcCrypto::fips_mode_enabled` reports FIPS mode.
-MSRV 1.88.
+MSRV 1.89.
