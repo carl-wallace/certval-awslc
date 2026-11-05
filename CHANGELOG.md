@@ -2,6 +2,15 @@
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), except that
 an increase to the minimum supported Rust version is not treated as a breaking change.
 
+## Unreleased
+
+Added a `cms` feature, under which `AwsLcCrypto` implements certval-cms's content encryption and
+decryption, key transport, key agreement and KEM interfaces: AES-128/192/256 in CBC and GCM (except
+AES-192-GCM encryption), RSAES-PKCS1-v1_5 and RSAES-OAEP, ephemeral-static ECDH on P-256, P-384 and
+P-521 with certval-cms's X9.63 KDF and key wrap, and ML-KEM with HKDF and AES-128/256 key wrap.
+`AwsLcRecipientKey` decrypts each recipient type, and `AwsLcSigningKey` signs SignedData with RSA
+and ECDSA, each with a private key AWS-LC holds.
+
 ## [0.1.0-rc.1] - 2026-10-31
 
 Initial release. Calculates SHA-1/224/256/384/512 digests and verifies RSA PKCS #1 v1.5,

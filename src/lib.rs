@@ -56,6 +56,10 @@
 #![warn(missing_docs)]
 
 mod algorithm;
+#[cfg(feature = "cms")]
+mod cms;
 mod provider;
 
+#[cfg(feature = "cms")]
+pub use cms::{AwsLcRecipientKey, AwsLcSigningKey};
 pub use provider::AwsLcCrypto;
