@@ -31,7 +31,7 @@ pqc = ["certval/pqc"]
 cms = ["dep:certval-cms", "dep:pkcs8", "dep:x509-cert", "dep:zeroize"]
 
 [dependencies]
-certval = { version = "0.2.0-rc.1", default-features = false }
+certval = { version = "0.2.0-rc.2", default-features = false }
 
 aws-lc-rs = { version = "1.19.0", default-features = false, features = ["alloc"] }
 const-oid = { version = "0.10.2", features = ["db"] }
@@ -49,7 +49,7 @@ zeroize = { version = "1.8.1", optional = true }
 [dev-dependencies]
 # certval's software RSA, which the tests compare this provider's verdicts against. A dev-dependency,
 # so the application, not this crate, decides which algorithms certval's software offers.
-certval = { version = "0.2.0-rc.1", default-features = false, features = ["rsa"] }
+certval = { version = "0.2.0-rc.2", default-features = false, features = ["rsa"] }
 x509-cert = { version = "0.3.0", features = ["builder", "hazmat"] }
 # The cms tests: keys generated in software, certificates for them, recipient identifiers, and the
 # random number generator certval-cms's builders take.
@@ -60,7 +60,7 @@ p256 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pkcs8"] }
 p384 = { version = "0.14.0", features = ["ecdh", "pkcs8"] }
 p521 = { version = "0.14.0", features = ["ecdh", "pkcs8"] }
 rand_core = "0.10.1"
-rsa = { version = "=0.10.0-rc.19", features = ["encoding"] }
+rsa = { version = "=0.10.0-rc.21", features = ["encoding"] }
 sha1 = "0.11.0"
 
 [package.metadata.docs.rs]
