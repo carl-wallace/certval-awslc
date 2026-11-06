@@ -61,5 +61,5 @@ mod cms;
 mod provider;
 
 #[cfg(feature = "cms")]
-pub use cms::{AwsLcRecipientKey, AwsLcSigningKey};
+pub use cms::{AwsLcKey, AwsLcRecipientKey, AwsLcSigningKey};
 pub use provider::AwsLcCrypto;

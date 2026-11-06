@@ -25,13 +25,14 @@ use aws_lc_rs::rsa::{
     Pkcs1PublicEncryptingKey, PrivateDecryptingKey, PublicEncryptingKey, OAEP_SHA1_MGF1SHA1,
     OAEP_SHA256_MGF1SHA256, OAEP_SHA384_MGF1SHA384, OAEP_SHA512_MGF1SHA512,
 };
-use aws_lc_rs::signature::{self, EcdsaKeyPair, EcdsaSigningAlgorithm, RsaKeyPair};
+use aws_lc_rs::signature::{self, EcdsaKeyPair, EcdsaSigningAlgorithm, KeyPair, RsaKeyPair};
 use certval_cms::{
     cek_from_ecdh_secret, content_decryption_parameters, kem_other_info, wrap_with_ecdh_secret,
     CmsEnvironment, ContentEncryptionAlgorithm, ContentEncryptionOutput, ContentParameters,
     DecryptContent, EncryptContent, EncryptKem, EncryptKeyAgreement, EncryptKeyTransport, Error,
     GcmParameters, KdfAlgorithm, KemOutput, KeyAgreeOutput, KeyAgreementAlgorithm,
     KeyTransportAlgorithm, KeyWrapAlgorithm, RecipientCredential, Result, SigningCredential,
+    SigningKey,
 };
 use const_oid::{
     db::{
@@ -536,40 +537,130 @@ impl RecipientCredential for AwsLcRecipientKey {
     }
 }
 
-/// The private key an [`AwsLcSigningKey`] holds. An ECDSA key is held as PKCS #8, since AWS-LC
+/// The private key an [`AwsLcKey`] holds. An ECDSA key is held as PKCS #8, since AWS-LC
 /// fixes the hash when the key is made.
-enum SigningKey {
+enum SigningKeyMaterial {
     Rsa(RsaKeyPair),
     Ecdsa(Zeroizing<Vec<u8>>, ObjectIdentifier),
+}
+
+/// A [`SigningKey`] whose private key AWS-LC holds, with no certificate: e.g. a key signing its own
+/// certificate request or a self-signed certificate. It signs as [`AwsLcSigningKey`] does.
+pub struct AwsLcKey {
+    public_key: SubjectPublicKeyInfoOwned,
+    key: SigningKeyMaterial,
+}
+
+impl AwsLcKey {
+    /// A key for the PKCS #8 (RFC 5958) private key `der`: RSA, or EC on P-256, P-384 or P-521.
+    pub fn from_pkcs8_der(der: &[u8]) -> Result<Self> {
+        let info = pkcs8::PrivateKeyInfoRef::from_der(der)?;
+        let (algorithm, public, key) = match info.algorithm.oid {
+            RSA_ENCRYPTION => {
+                let key = RsaKeyPair::from_pkcs8(der).map_err(|_| declined("decode an RSA key"))?;
+                let public = key.public_key().as_ref().to_vec();
+                let algorithm = AlgorithmIdentifierOwned {
+                    oid: RSA_ENCRYPTION,
+                    parameters: Some(Any::null()),
+                };
+                (algorithm, public, SigningKeyMaterial::Rsa(key))
+            }
+            ID_EC_PUBLIC_KEY => {
+                let curve = info
+                    .algorithm
+                    .parameters_oid()
+                    .map_err(|_| Error::Unrecognized)?;
+                // Any of the curve's signing algorithms decodes the key; the one used to sign is
+                // chosen per signature.
+                let decoding = match curve {
+                    SECP_256_R_1 => &signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                    SECP_384_R_1 => &signature::ECDSA_P384_SHA384_ASN1_SIGNING,
+                    SECP_521_R_1 => &signature::ECDSA_P521_SHA512_ASN1_SIGNING,
+                    _ => return Err(Error::Unrecognized),
+                };
+                let key = EcdsaKeyPair::from_pkcs8(decoding, der)
+                    .map_err(|_| declined("decode an EC key"))?;
+                let public = key.public_key().as_ref().to_vec();
+                let algorithm = AlgorithmIdentifierOwned {
+                    oid: ID_EC_PUBLIC_KEY,
+                    parameters: Some(Any::from(&curve)),
+                };
+                (
+                    algorithm,
+                    public,
+                    SigningKeyMaterial::Ecdsa(Zeroizing::new(der.to_vec()), curve),
+                )
+            }
+            _ => return Err(Error::Unrecognized),
+        };
+        Ok(Self {
+            public_key: SubjectPublicKeyInfoOwned {
+                algorithm,
+                subject_public_key: der::asn1::BitString::from_bytes(&public)?,
+            },
+            key,
+        })
+    }
+
+    fn sign(&self, alg: &AlgorithmIdentifierOwned, message: &[u8]) -> Result<Vec<u8>> {
+        let rng = SystemRandom::new();
+        let signature = match &self.key {
+            SigningKeyMaterial::Rsa(key) => {
+                let padding = rsa_padding(alg)?;
+                let mut signature = vec![0u8; key.public_modulus_len()];
+                key.sign(padding, &rng, message, &mut signature)
+                    .map_err(|_| Error::Crypto(String::from("signing failed")))?;
+                signature
+            }
+            SigningKeyMaterial::Ecdsa(pkcs8, curve) => {
+                let algorithm = ecdsa_signing(*curve, alg.oid).ok_or(Error::Unrecognized)?;
+                let key = EcdsaKeyPair::from_pkcs8(algorithm, pkcs8)
+                    .map_err(|_| declined("decode an EC key"))?;
+                key.sign(&rng, message)
+                    .map_err(|_| Error::Crypto(String::from("signing failed")))?
+                    .as_ref()
+                    .to_vec()
+            }
+        };
+        trace!("AWS-LC signed with {}", alg.oid);
+        Ok(signature)
+    }
+}
+
+impl SigningKey for AwsLcKey {
+    fn public_key(&self) -> &SubjectPublicKeyInfoOwned {
+        &self.public_key
+    }
+
+    fn sign_message(
+        &self,
+        _env: &CmsEnvironment,
+        alg: &AlgorithmIdentifierOwned,
+        message: &[u8],
+    ) -> Result<Vec<u8>> {
+        self.sign(alg, message)
+    }
 }
 
 /// A [`SigningCredential`] whose private key AWS-LC holds: RSA PKCS #1 v1.5 or RSASSA-PSS (salt the
 /// length of the hash) with SHA-256, -384 or -512, and ECDSA with the curve and hash pairings
 /// AWS-LC offers: P-256 with SHA-256, P-384 with SHA-384, and P-521 with SHA-256, -384 or -512.
+/// An [`AwsLcKey`] with its certificate.
 pub struct AwsLcSigningKey {
     certificate: Certificate,
-    key: SigningKey,
+    key: AwsLcKey,
 }
 
 impl AwsLcSigningKey {
-    /// A credential for the PKCS #8 (RFC 5958) private key `der`, identified by `certificate`.
+    /// A credential for the PKCS #8 (RFC 5958) private key `der`, identified by `certificate`. The
+    /// key must be the private half of the certificate's public key.
     pub fn from_pkcs8_der(certificate: Certificate, der: &[u8]) -> Result<Self> {
-        let spki = certificate.tbs_certificate().subject_public_key_info();
-        let key = if spki.algorithm.oid == RSA_ENCRYPTION {
-            SigningKey::Rsa(RsaKeyPair::from_pkcs8(der).map_err(|_| declined("decode an RSA key"))?)
-        } else if spki.algorithm.oid == ID_EC_PUBLIC_KEY {
-            let curve = ObjectIdentifier::from_der(
-                &spki
-                    .algorithm
-                    .parameters
-                    .as_ref()
-                    .ok_or(Error::Unrecognized)?
-                    .to_der()?,
-            )?;
-            SigningKey::Ecdsa(Zeroizing::new(der.to_vec()), curve)
-        } else {
-            return Err(Error::Unrecognized);
-        };
+        let key = AwsLcKey::from_pkcs8_der(der)?;
+        if key.public_key != *certificate.tbs_certificate().subject_public_key_info() {
+            return Err(Error::InvalidInput(String::from(
+                "the private key is not the certificate's",
+            )));
+        }
         Ok(Self { certificate, key })
     }
 }
@@ -636,26 +727,6 @@ impl SigningCredential for AwsLcSigningKey {
         alg: &AlgorithmIdentifierOwned,
         message: &[u8],
     ) -> Result<Vec<u8>> {
-        let rng = SystemRandom::new();
-        let signature = match &self.key {
-            SigningKey::Rsa(key) => {
-                let padding = rsa_padding(alg)?;
-                let mut signature = vec![0u8; key.public_modulus_len()];
-                key.sign(padding, &rng, message, &mut signature)
-                    .map_err(|_| Error::Crypto(String::from("signing failed")))?;
-                signature
-            }
-            SigningKey::Ecdsa(pkcs8, curve) => {
-                let algorithm = ecdsa_signing(*curve, alg.oid).ok_or(Error::Unrecognized)?;
-                let key = EcdsaKeyPair::from_pkcs8(algorithm, pkcs8)
-                    .map_err(|_| declined("decode an EC key"))?;
-                key.sign(&rng, message)
-                    .map_err(|_| Error::Crypto(String::from("signing failed")))?
-                    .as_ref()
-                    .to_vec()
-            }
-        };
-        trace!("AWS-LC signed with {}", alg.oid);
-        Ok(signature)
+        self.key.sign(alg, message)
     }
 }
