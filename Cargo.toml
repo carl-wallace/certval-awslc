@@ -21,7 +21,7 @@ default = ["non-fips"]
 non-fips = ["aws-lc-rs/non-fips"]
 # AWS-LC's FIPS module, built from the source its validation covers. Needs CMake and Go to build, and
 # is the validated module only where the build follows the module's security policy on an operating
-# environment its certificate lists. When both this and non-fips are enabled, aws-lc-rs uses this.
+# environment its certificate lists. aws-lc-rs refuses to build with both this and non-fips enabled.
 fips = ["aws-lc-rs/fips"]
 # Enables certval's software ML-DSA implementation. The provider needs nothing from it, but without
 # it the ML-DSA tests have no software verdict to compare against.
