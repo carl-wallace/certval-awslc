@@ -27,7 +27,7 @@ pe.populate_5280_pki_environment();
 | Feature | Effect |
 |---|---|
 | `non-fips` (default) | AWS-LC's ordinary build; needs a C compiler |
-| `fips` | AWS-LC's FIPS module; needs CMake and Go to build. Takes precedence when both are enabled |
+| `fips` | AWS-LC's FIPS module; needs CMake and Go to build, and `non-fips` off (`--no-default-features`), since aws-lc-rs refuses to build with both |
 | `pqc` | certval's software ML-DSA and SLH-DSA, for the tests' comparison; the provider needs nothing from it |
 | `cms` | implements [certval-cms](https://github.com/carl-wallace/certval-cms)'s interfaces; see [CMS](#cms) |
 
