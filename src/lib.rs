@@ -52,6 +52,7 @@
 //! so a `fips` build implements no digest interface: such a verification is declined, and whatever
 //! else is registered answers it.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 

@@ -499,6 +499,20 @@ fn a_gcm_tag_shorter_than_16_octets_is_declined() {
     );
 }
 
+/// A key aws-lc-rs refuses, here RSA-1024, is reported with its reason, the caller having chosen
+/// it, rather than declined as an operation this provider does not perform.
+#[test]
+fn a_key_aws_lc_refuses_is_reported_with_its_reason() {
+    let key = rsa::RsaPrivateKey::new(&mut rng(), 1024).unwrap();
+    let pkcs8 = key.to_pkcs8_der().unwrap();
+    match certval_awslc::AwsLcKey::from_pkcs8_der(pkcs8.as_bytes()) {
+        Err(certval_cms::Error::InvalidInput(reason)) => {
+            assert!(reason.starts_with("aws-lc-rs refused the key"), "{reason}")
+        }
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+}
+
 #[test]
 fn aes_192_gcm_encryption_is_declined() {
     assert!(matches!(

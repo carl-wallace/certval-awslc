@@ -32,7 +32,9 @@ pe.populate_5280_pki_environment();
 | `cms` | implements [certval-cms](https://github.com/carl-wallace/certval-cms)'s interfaces; see [CMS](#cms) |
 
 For a FIPS build, `--no-default-features --features fips`. `AwsLcCrypto::fips_mode_enabled()`
-reports whether AWS-LC is running in FIPS mode. The validation covers AWS-LC's C module, built as
+reports whether AWS-LC is running in FIPS mode. That is the module's mode, not approval of each
+service: RSAES-PKCS1-v1_5 key transport, which is not an approved service, still runs under it, and
+aws-lc-rs exports no per-service indicator. The validation covers AWS-LC's C module, built as
 its security policy describes, on the operating environments its certificate lists; aws-lc-rs and
 this crate are outside it. Whether a given AWS-LC FIPS release is validated is a question for NIST's
 CMVP list.
