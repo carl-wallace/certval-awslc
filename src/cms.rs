@@ -196,6 +196,11 @@ impl DecryptContent for AwsLcCrypto {
                     .map_err(|_| declined("make a GCM key"))?;
                 let nonce =
                     Nonce::try_assume_unique_for_key(&nonce).map_err(|_| Error::Unrecognized)?;
+                // AWS-LC opens 16-octet tags only; a shorter one RFC 5084 allows is declined, as
+                // a nonce of another length is, rather than judged a bad tag.
+                if tag.len() != GCM_TAG_LEN {
+                    return Err(declined("open a GCM tag of another length"));
+                }
                 let mut buf = Zeroizing::new([ciphertext, tag].concat());
                 let plaintext = opening
                     .open_in_place(nonce, Aad::from(aad.unwrap_or_default()), &mut buf)

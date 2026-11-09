@@ -18,17 +18,17 @@ use certval::PkiEnvironment;
 use certval_awslc::{AwsLcCrypto, AwsLcRecipientKey, AwsLcSigningKey};
 use certval_cms::{
     rsa_pss, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm, DigestAlgorithm,
-    EnvelopedDataBuilder, KdfAlgorithm, KemRecipient, KeyAgreeRecipient, KeyAgreementAlgorithm,
-    KeyTransRecipient, KeyTransportAlgorithm, KeyWrapAlgorithm, RecipientCredential,
-    SignedDataBuilder, Signer, SignerPolicy, SigningCredential, SoftwareRecipientKey,
-    SoftwareSigningKey,
+    EnvelopedDataBuilder, GcmParameters, KdfAlgorithm, KemRecipient, KeyAgreeRecipient,
+    KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm, KeyWrapAlgorithm,
+    RecipientCredential, SignedDataBuilder, Signer, SignerPolicy, SigningCredential,
+    SoftwareRecipientKey, SoftwareSigningKey,
 };
 use cms::content_info::ContentInfo;
 use const_oid::db::fips203::{ID_ALG_ML_KEM_1024, ID_ALG_ML_KEM_512, ID_ALG_ML_KEM_768};
 use const_oid::db::rfc5912::ID_CE_SUBJECT_KEY_IDENTIFIER;
 use der::{
     asn1::{BitString, OctetString, OctetStringRef},
-    Decode, Encode,
+    Any, Decode, Encode,
 };
 use elliptic_curve::Generate as _;
 use getrandom::SysRng;
@@ -214,7 +214,7 @@ macro_rules! ec_key {
 fn envelop<'e>(
     env: &'e CmsEnvironment,
     alg: ContentEncryptionAlgorithm,
-    recipient: impl cms::builder::RecipientInfoBuilder<Rng = Rng> + 'e,
+    recipient: impl certval_cms::RecipientInfoBuilder<Rng = Rng> + 'e,
 ) -> ContentInfo {
     if alg.is_authenticated() {
         AuthEnvelopedDataBuilder::new(MESSAGE, alg)
@@ -471,6 +471,32 @@ fn ecdsa_with_the_pairings_aws_lc_offers() {
             sign_both_ways(&key, |s| s.digest(digest), &format!("{curve} {digest:?}"));
         }
     }
+}
+
+/// AWS-LC opens 16-octet GCM tags only. A message giving a 12-octet tag, which RFC 5084 allows,
+/// is declined so that another implementation can take it, not reported as a failed decryption.
+#[test]
+fn a_gcm_tag_shorter_than_16_octets_is_declined() {
+    let env = aws_lc();
+    let out = env
+        .encrypt_content(ContentEncryptionAlgorithm::Aes256Gcm, MESSAGE, None)
+        .unwrap();
+    let mut alg = out.algorithm.clone();
+    let mut params =
+        GcmParameters::from_der(&alg.parameters.as_ref().unwrap().to_der().unwrap()).unwrap();
+    params.icv_len = 12;
+    alg.parameters = Some(Any::encode_from(&params).unwrap());
+    let tag = out.tag.as_ref().unwrap();
+    assert!(matches!(
+        env.decrypt_content(&alg, &out.key, &out.ciphertext, None, Some(&tag[..12])),
+        Err(certval_cms::Error::Unrecognized)
+    ));
+    assert_eq!(
+        env.decrypt_content(&out.algorithm, &out.key, &out.ciphertext, None, Some(tag))
+            .unwrap()
+            .as_slice(),
+        MESSAGE
+    );
 }
 
 #[test]
