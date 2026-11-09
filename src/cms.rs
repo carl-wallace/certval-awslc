@@ -62,6 +62,12 @@ const CBC_IV_LEN: usize = 16;
 /// Length in octets of the GCM tag produced for a message.
 const GCM_TAG_LEN: usize = 16;
 
+/// A key given to this provider that aws-lc-rs refused, with its reason; unlike a key met in a
+/// message, the caller chose this one, so the refusal is theirs to read.
+fn refused_key(e: impl core::fmt::Display) -> Error {
+    Error::InvalidInput(format!("aws-lc-rs refused the key: {e}"))
+}
+
 fn declined(what: &str) -> Error {
     debug!("AWS-LC declined to {what}");
     Error::Unrecognized
@@ -429,14 +435,9 @@ impl AwsLcRecipientKey {
             .subject_public_key_info()
             .clone();
         let key = if spki.algorithm.oid == RSA_ENCRYPTION {
-            RecipientKey::Rsa(
-                PrivateDecryptingKey::from_pkcs8(der).map_err(|_| declined("decode an RSA key"))?,
-            )
+            RecipientKey::Rsa(PrivateDecryptingKey::from_pkcs8(der).map_err(refused_key)?)
         } else if let Some(algorithm) = ecdh_algorithm(&spki) {
-            RecipientKey::Ec(
-                PrivateKey::from_private_key_der(algorithm, der)
-                    .map_err(|_| declined("decode an EC key"))?,
-            )
+            RecipientKey::Ec(PrivateKey::from_private_key_der(algorithm, der).map_err(refused_key)?)
         } else if let Some(algorithm) = kem_algorithm(spki.algorithm.oid) {
             let info = pkcs8::PrivateKeyInfoRef::from_der(der)?;
             let expanded = match MlKemPrivateKey::from_der(info.private_key.as_bytes())? {
@@ -449,8 +450,7 @@ impl AwsLcRecipientKey {
                 }
             };
             RecipientKey::MlKem(
-                DecapsulationKey::new(algorithm, expanded.as_bytes())
-                    .map_err(|_| declined("decode an ML-KEM key"))?,
+                DecapsulationKey::new(algorithm, expanded.as_bytes()).map_err(refused_key)?,
             )
         } else {
             return Err(Error::Unrecognized);
@@ -562,7 +562,7 @@ impl AwsLcKey {
         let info = pkcs8::PrivateKeyInfoRef::from_der(der)?;
         let (algorithm, public, key) = match info.algorithm.oid {
             RSA_ENCRYPTION => {
-                let key = RsaKeyPair::from_pkcs8(der).map_err(|_| declined("decode an RSA key"))?;
+                let key = RsaKeyPair::from_pkcs8(der).map_err(refused_key)?;
                 let public = key.public_key().as_ref().to_vec();
                 let algorithm = AlgorithmIdentifierOwned {
                     oid: RSA_ENCRYPTION,
@@ -583,8 +583,7 @@ impl AwsLcKey {
                     SECP_521_R_1 => &signature::ECDSA_P521_SHA512_ASN1_SIGNING,
                     _ => return Err(Error::Unrecognized),
                 };
-                let key = EcdsaKeyPair::from_pkcs8(decoding, der)
-                    .map_err(|_| declined("decode an EC key"))?;
+                let key = EcdsaKeyPair::from_pkcs8(decoding, der).map_err(refused_key)?;
                 let public = key.public_key().as_ref().to_vec();
                 let algorithm = AlgorithmIdentifierOwned {
                     oid: ID_EC_PUBLIC_KEY,
