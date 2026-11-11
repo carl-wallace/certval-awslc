@@ -143,7 +143,7 @@ struct Key {
 
 impl Key {
     fn rsa() -> Self {
-        let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+        let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
         let spki = key.to_public_key().to_public_key_der().unwrap();
         Self {
             cert: certificate(SubjectPublicKeyInfoOwned::from_der(spki.as_bytes()).unwrap()),
@@ -532,7 +532,7 @@ fn a_private_key_that_is_not_the_certificates_is_refused() {
 /// requires still holds the key, and the key is accepted with it.
 #[test]
 fn an_rsa_certificate_without_null_parameters_holds_its_key() {
-    let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
     let mut spki = SubjectPublicKeyInfoOwned::from_der(
         key.to_public_key().to_public_key_der().unwrap().as_bytes(),
     )
@@ -548,7 +548,7 @@ fn an_rsa_certificate_without_null_parameters_holds_its_key() {
 /// it, rather than declined as an operation this provider does not perform.
 #[test]
 fn a_key_aws_lc_refuses_is_reported_with_its_reason() {
-    let key = rsa::RsaPrivateKey::new(&mut rng(), 1024).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng(), 1024).unwrap();
     let pkcs8 = key.to_pkcs8_der().unwrap();
     match certval_awslc::AwsLcKey::from_pkcs8_der(pkcs8.as_bytes()) {
         Err(certval_cms::Error::InvalidInput(reason)) => {
