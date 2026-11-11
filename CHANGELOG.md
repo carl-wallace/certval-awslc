@@ -14,7 +14,7 @@ decryption, key transport, key agreement and KEM interfaces: AES-128/192/256 in 
 AES-192-GCM encryption), RSAES-PKCS1-v1_5 and RSAES-OAEP, ephemeral-static ECDH on P-256, P-384 and
 P-521 with certval-cms's X9.63 KDF and key wrap, and ML-KEM with HKDF and AES-128/256 key wrap.
 `AwsLcRecipientKey` decrypts each recipient type, and `AwsLcSigningKey` signs SignedData with RSA
-and ECDSA, each with a private key AWS-LC holds; it checks that the key is the certificate's.
+and ECDSA, each with a private key AWS-LC holds; both check that the key is the certificate's.
 `AwsLcKey` is the signing key without a certificate (certval-cms's `SigningKey`), e.g. to sign a
 certificate request.
 

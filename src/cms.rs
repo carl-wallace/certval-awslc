@@ -428,16 +428,34 @@ pub struct AwsLcRecipientKey {
 impl AwsLcRecipientKey {
     /// A credential for the PKCS #8 (RFC 5958) private key `der`, identified by `certificate`: RSA,
     /// EC on P-256, P-384 or P-521, or ML-KEM in RFC 9935's expanded or combined form, AWS-LC
-    /// taking the expanded key. An ML-KEM key with only its seed is refused.
+    /// taking the expanded key. An ML-KEM key with only its seed is refused. The key must be the
+    /// private half of the certificate's public key.
     pub fn from_pkcs8_der(certificate: Certificate, der: &[u8]) -> Result<Self> {
         let spki = certificate
             .tbs_certificate()
             .subject_public_key_info()
             .clone();
-        let key = if spki.algorithm.oid == RSA_ENCRYPTION {
-            RecipientKey::Rsa(PrivateDecryptingKey::from_pkcs8(der).map_err(refused_key)?)
+        let unavailable =
+            |_| Error::Crypto(String::from("AWS-LC could not compute the public key"));
+        // Each key is decoded as the certificate's algorithm says, so only the public key itself
+        // remains to compare.
+        let (key, public): (RecipientKey, Vec<u8>) = if spki.algorithm.oid == RSA_ENCRYPTION {
+            use aws_lc_rs::encoding::AsDer;
+            let key = PrivateDecryptingKey::from_pkcs8(der).map_err(refused_key)?;
+            let der = key.public_key().as_der().map_err(unavailable)?;
+            let public = SubjectPublicKeyInfoOwned::from_der(der.as_ref())?
+                .subject_public_key
+                .raw_bytes()
+                .to_vec();
+            (RecipientKey::Rsa(key), public)
         } else if let Some(algorithm) = ecdh_algorithm(&spki) {
-            RecipientKey::Ec(PrivateKey::from_private_key_der(algorithm, der).map_err(refused_key)?)
+            let key = PrivateKey::from_private_key_der(algorithm, der).map_err(refused_key)?;
+            let public = key
+                .compute_public_key()
+                .map_err(unavailable)?
+                .as_ref()
+                .to_vec();
+            (RecipientKey::Ec(key), public)
         } else if let Some(algorithm) = kem_algorithm(spki.algorithm.oid) {
             let info = pkcs8::PrivateKeyInfoRef::from_der(der)?;
             let expanded = match MlKemPrivateKey::from_der(info.private_key.as_bytes())? {
@@ -449,12 +467,24 @@ impl AwsLcRecipientKey {
                     )))
                 }
             };
-            RecipientKey::MlKem(
-                DecapsulationKey::new(algorithm, expanded.as_bytes()).map_err(refused_key)?,
-            )
+            let key = DecapsulationKey::new(algorithm, expanded.as_bytes()).map_err(refused_key)?;
+            // FIPS 203's expanded key is dk_PKE || ek || H(ek) || z, where dk_PKE is 384k octets
+            // and ek 384k + 32, so ek begins 32 octets short of its own length.
+            let ek_len = spki.subject_public_key.raw_bytes().len();
+            let public = expanded
+                .as_bytes()
+                .get(ek_len.saturating_sub(32)..(2 * ek_len).saturating_sub(32))
+                .unwrap_or_default()
+                .to_vec();
+            (RecipientKey::MlKem(key), public)
         } else {
             return Err(Error::Unrecognized);
         };
+        if public != spki.subject_public_key.raw_bytes() {
+            return Err(Error::InvalidInput(String::from(
+                "the private key is not the certificate's: the public keys differ",
+            )));
+        }
         Ok(Self { certificate, key })
     }
 }
@@ -646,6 +676,34 @@ impl SigningKey for AwsLcKey {
     }
 }
 
+/// Refuses `key`, a private key's public key, unless it is `certificate`'s: the same algorithm,
+/// the same named curve for an EC key, and the same public key. The parameters are otherwise not
+/// compared: RFC 3279 requires NULL with rsaEncryption, but certificates omitting it exist, and the
+/// key is theirs all the same.
+fn check_certificates_key(
+    key: &SubjectPublicKeyInfoOwned,
+    certificate: &SubjectPublicKeyInfoOwned,
+) -> Result<()> {
+    let curve = |spki: &SubjectPublicKeyInfoOwned| {
+        spki.algorithm
+            .parameters
+            .as_ref()
+            .and_then(|p| p.decode_as::<ObjectIdentifier>().ok())
+    };
+    let differs = if key.algorithm.oid != certificate.algorithm.oid {
+        "the algorithms differ"
+    } else if key.algorithm.oid == ID_EC_PUBLIC_KEY && curve(key) != curve(certificate) {
+        "the curves differ"
+    } else if key.subject_public_key != certificate.subject_public_key {
+        "the public keys differ"
+    } else {
+        return Ok(());
+    };
+    Err(Error::InvalidInput(format!(
+        "the private key is not the certificate's: {differs}"
+    )))
+}
+
 /// A [`SigningCredential`] whose private key AWS-LC holds: RSA PKCS #1 v1.5 or RSASSA-PSS (salt the
 /// length of the hash) with SHA-256, -384 or -512, and ECDSA with the curve and hash pairings
 /// AWS-LC offers: P-256 with SHA-256, P-384 with SHA-384, and P-521 with SHA-256, -384 or -512.
@@ -660,11 +718,10 @@ impl AwsLcSigningKey {
     /// key must be the private half of the certificate's public key.
     pub fn from_pkcs8_der(certificate: Certificate, der: &[u8]) -> Result<Self> {
         let key = AwsLcKey::from_pkcs8_der(der)?;
-        if key.public_key != *certificate.tbs_certificate().subject_public_key_info() {
-            return Err(Error::InvalidInput(String::from(
-                "the private key is not the certificate's",
-            )));
-        }
+        check_certificates_key(
+            &key.public_key,
+            certificate.tbs_certificate().subject_public_key_info(),
+        )?;
         Ok(Self { certificate, key })
     }
 }
