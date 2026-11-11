@@ -143,7 +143,7 @@ struct Key {
 
 impl Key {
     fn rsa() -> Self {
-        let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+        let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
         let spki = key.to_public_key().to_public_key_der().unwrap();
         Self {
             cert: certificate(SubjectPublicKeyInfoOwned::from_der(spki.as_bytes()).unwrap()),
@@ -499,11 +499,56 @@ fn a_gcm_tag_shorter_than_16_octets_is_declined() {
     );
 }
 
+/// A private key must be its certificate's: another key is refused, for decryption as for signing.
+#[test]
+fn a_private_key_that_is_not_the_certificates_is_refused() {
+    let refused = |result: certval_cms::Result<()>, name: &str| match result {
+        Err(certval_cms::Error::InvalidInput(reason)) => assert!(
+            reason.starts_with("the private key is not the certificate's"),
+            "{name}: {reason}"
+        ),
+        other => panic!("{name}: {other:?}"),
+    };
+    let (a, b) = (Key::rsa(), Key::rsa());
+    refused(
+        AwsLcRecipientKey::from_pkcs8_der(a.cert.clone(), &b.pkcs8).map(|_| ()),
+        "RSA recipient",
+    );
+    refused(
+        AwsLcSigningKey::from_pkcs8_der(a.cert, &b.pkcs8).map(|_| ()),
+        "RSA signer",
+    );
+    let (a, b) = (
+        Key::ml_kem(&ML_KEM_768, ID_ALG_ML_KEM_768),
+        Key::ml_kem(&ML_KEM_768, ID_ALG_ML_KEM_768),
+    );
+    refused(
+        AwsLcRecipientKey::from_pkcs8_der(a.cert, &b.pkcs8).map(|_| ()),
+        "ML-KEM-768 recipient",
+    );
+}
+
+/// A certificate whose rsaEncryption algorithm identifier omits the NULL parameters RFC 3279
+/// requires still holds the key, and the key is accepted with it.
+#[test]
+fn an_rsa_certificate_without_null_parameters_holds_its_key() {
+    let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
+    let mut spki = SubjectPublicKeyInfoOwned::from_der(
+        key.to_public_key().to_public_key_der().unwrap().as_bytes(),
+    )
+    .unwrap();
+    spki.algorithm.parameters = None;
+    let cert = certificate(spki);
+    let pkcs8 = key.to_pkcs8_der().unwrap();
+    AwsLcSigningKey::from_pkcs8_der(cert.clone(), pkcs8.as_bytes()).unwrap();
+    AwsLcRecipientKey::from_pkcs8_der(cert, pkcs8.as_bytes()).unwrap();
+}
+
 /// A key aws-lc-rs refuses, here RSA-1024, is reported with its reason, the caller having chosen
 /// it, rather than declined as an operation this provider does not perform.
 #[test]
 fn a_key_aws_lc_refuses_is_reported_with_its_reason() {
-    let key = rsa::RsaPrivateKey::new(&mut rng(), 1024).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng(), 1024).unwrap();
     let pkcs8 = key.to_pkcs8_der().unwrap();
     match certval_awslc::AwsLcKey::from_pkcs8_der(pkcs8.as_bytes()) {
         Err(certval_cms::Error::InvalidInput(reason)) => {

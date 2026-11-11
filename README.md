@@ -122,7 +122,8 @@ What AWS-LC does not offer is declined, and the next implementation registered a
   `wrap_with_ecdh_secret` and `cek_from_ecdh_secret` derive and wrap or unwrap. The shared secret
   therefore leaves AWS-LC, unlike with the OpenSSL provider.
 - **An ML-KEM private key holding only the seed.** `AwsLcRecipientKey` needs the expanded key, alone
-  or with the seed (RFC 9935).
+  or with the seed (RFC 9935). AWS-LC reads the seed form, but aws-lc-rs has no constructor that
+  takes it.
 - **ML-DSA signing**, which this provider does not yet do.
 
 ## Testing
