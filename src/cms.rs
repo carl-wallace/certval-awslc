@@ -187,12 +187,15 @@ impl DecryptContent for AwsLcCrypto {
                     .as_slice()
                     .try_into()
                     .map_err(|_| content_decryption_failed())?;
+                // Decrypted in place; the plaintext is the buffer's start, so the buffer is cut to
+                // it rather than copied.
                 let mut buf = Zeroizing::new(ciphertext.to_vec());
-                let plaintext = decrypting
+                let len = decrypting
                     .decrypt(&mut buf, DecryptionContext::Iv128(iv.into()))
                     .map_err(|_| content_decryption_failed())?
-                    .to_vec();
-                Zeroizing::new(plaintext)
+                    .len();
+                buf.truncate(len);
+                buf
             }
             (ContentParameters::Gcm { nonce }, Some(tag)) => {
                 // The nonce is the message's, so the key takes it rather than generating one.
@@ -207,12 +210,15 @@ impl DecryptContent for AwsLcCrypto {
                 if tag.len() != GCM_TAG_LEN {
                     return Err(declined("open a GCM tag of another length"));
                 }
+                // Opened in place; the plaintext is the buffer's start, so the buffer is cut to it
+                // rather than copied.
                 let mut buf = Zeroizing::new([ciphertext, tag].concat());
-                let plaintext = opening
+                let len = opening
                     .open_in_place(nonce, Aad::from(aad.unwrap_or_default()), &mut buf)
                     .map_err(|_| content_decryption_failed())?
-                    .to_vec();
-                Zeroizing::new(plaintext)
+                    .len();
+                buf.truncate(len);
+                buf
             }
             _ => return Err(Error::Unrecognized),
         };
