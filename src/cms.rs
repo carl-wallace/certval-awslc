@@ -428,8 +428,9 @@ pub struct AwsLcRecipientKey {
 impl AwsLcRecipientKey {
     /// A credential for the PKCS #8 (RFC 5958) private key `der`, identified by `certificate`: RSA,
     /// EC on P-256, P-384 or P-521, or ML-KEM in RFC 9935's expanded or combined form, AWS-LC
-    /// taking the expanded key. An ML-KEM key with only its seed is refused. The key must be the
-    /// private half of the certificate's public key.
+    /// taking the expanded key. An ML-KEM key with only its seed is refused: AWS-LC reads the seed
+    /// form, but aws-lc-rs has no constructor that takes it. The key must be the private half of the
+    /// certificate's public key.
     pub fn from_pkcs8_der(certificate: Certificate, der: &[u8]) -> Result<Self> {
         let spki = certificate
             .tbs_certificate()
@@ -458,15 +459,14 @@ impl AwsLcRecipientKey {
             (RecipientKey::Ec(key), public)
         } else if let Some(algorithm) = kem_algorithm(spki.algorithm.oid) {
             let info = pkcs8::PrivateKeyInfoRef::from_der(der)?;
-            let expanded = match MlKemPrivateKey::from_der(info.private_key.as_bytes())? {
-                MlKemPrivateKey::ExpandedKey(expanded) => expanded,
-                MlKemPrivateKey::Both(both) => both.expanded_key,
-                MlKemPrivateKey::Seed(_) => {
-                    return Err(Error::InvalidInput(String::from(
-                        "an ML-KEM private key with only its seed, which AWS-LC does not take",
-                    )))
-                }
-            };
+            let expanded =
+                match MlKemPrivateKey::from_der(info.private_key.as_bytes())? {
+                    MlKemPrivateKey::ExpandedKey(expanded) => expanded,
+                    MlKemPrivateKey::Both(both) => both.expanded_key,
+                    MlKemPrivateKey::Seed(_) => return Err(Error::InvalidInput(String::from(
+                        "an ML-KEM private key with only its seed, which aws-lc-rs does not take",
+                    ))),
+                };
             let key = DecapsulationKey::new(algorithm, expanded.as_bytes()).map_err(refused_key)?;
             // FIPS 203's expanded key is dk_PKE || ek || H(ek) || z, where dk_PKE is 384k octets
             // and ek 384k + 32, so ek begins 32 octets short of its own length.
