@@ -5,7 +5,7 @@
 //! Every key transport algorithm with AES-CBC and AES-GCM content; ECDH on P-256, P-384 and P-521
 //! with each KDF hash, each wrap AWS-LC offers (AES-128 and AES-256), and user keying material;
 //! ML-KEM with each parameter set, KDF and wrap; and signing with RSA PKCS #1 v1.5 and RSASSA-PSS
-//! and the ECDSA curve and hash pairings AWS-LC offers.
+//! and the ECDSA curve and hash pairings AWS-LC offers; and EncryptedData under a given key.
 
 #![cfg(feature = "cms")]
 
@@ -17,12 +17,13 @@ use aws_lc_rs::kem::{DecapsulationKey, ML_KEM_1024, ML_KEM_512, ML_KEM_768};
 use certval::PkiEnvironment;
 use certval_awslc::{AwsLcCrypto, AwsLcRecipientKey, AwsLcSigningKey};
 use certval_cms::{
-    rsa_pss, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm, DigestAlgorithm,
-    EnvelopedDataBuilder, GcmParameters, KdfAlgorithm, KemRecipient, KeyAgreeRecipient,
-    KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm, KeyWrapAlgorithm,
-    RecipientCredential, SignedDataBuilder, Signer, SignerPolicy, SigningCredential,
-    SoftwareRecipientKey, SoftwareSigningKey,
+    content_info, rsa_pss, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm,
+    DigestAlgorithm, EncryptedDataBuilder, GcmParameters, KdfAlgorithm, KemRecipient,
+    KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm,
+    KeyWrapAlgorithm, RecipientCredential, SignedDataBuilder, Signer, SignerPolicy,
+    SigningCredential, SoftwareRecipientKey, SoftwareSigningKey,
 };
+use cms::builder::{EnvelopedDataBuilder, RecipientInfoBuilder};
 use cms::content_info::ContentInfo;
 use const_oid::db::fips203::{ID_ALG_ML_KEM_1024, ID_ALG_ML_KEM_512, ID_ALG_ML_KEM_768};
 use const_oid::db::rfc5912::ID_CE_SUBJECT_KEY_IDENTIFIER;
@@ -214,20 +215,22 @@ macro_rules! ec_key {
 fn envelop<'e>(
     env: &'e CmsEnvironment,
     alg: ContentEncryptionAlgorithm,
-    recipient: impl certval_cms::RecipientInfoBuilder<Rng = Rng> + 'e,
+    recipient: impl RecipientInfoBuilder<Rng = Rng> + 'e,
 ) -> ContentInfo {
     if alg.is_authenticated() {
-        AuthEnvelopedDataBuilder::new(MESSAGE, alg)
-            .unwrap()
+        AuthEnvelopedDataBuilder::new(MESSAGE, env.content_encryptor(alg))
             .add_recipient(recipient)
-            .build_content_info(env, &mut rng())
+            .build_content_info(&mut rng())
             .unwrap_or_else(|e| panic!("building: {e}"))
     } else {
-        EnvelopedDataBuilder::new(MESSAGE, alg)
-            .unwrap()
-            .add_recipient(recipient)
-            .build_content_info(env, &mut rng())
-            .unwrap_or_else(|e| panic!("building: {e}"))
+        let enveloped_data =
+            EnvelopedDataBuilder::new(None, MESSAGE, env.content_encryptor(alg), None)
+                .unwrap()
+                .add_recipient_info(recipient)
+                .unwrap()
+                .build_with_rng(&mut rng())
+                .unwrap_or_else(|e| panic!("building: {e}"));
+        content_info(const_oid::db::rfc5911::ID_ENVELOPED_DATA, &enveloped_data).unwrap()
     }
 }
 
@@ -564,4 +567,37 @@ fn aes_192_gcm_encryption_is_declined() {
         aws_lc().encrypt_content(ContentEncryptionAlgorithm::Aes192Gcm, MESSAGE, None),
         Err(certval_cms::Error::Unrecognized)
     ));
+}
+
+/// EncryptedData under a given key, both ways: what AWS-LC encrypts, software decrypts, and the
+/// reverse, for each CBC key size.
+#[test]
+fn encrypted_data_under_a_given_key_both_ways() {
+    for alg in [
+        ContentEncryptionAlgorithm::Aes128Cbc,
+        ContentEncryptionAlgorithm::Aes192Cbc,
+        ContentEncryptionAlgorithm::Aes256Cbc,
+    ] {
+        let key: Vec<u8> = (1..=alg.key_len() as u8).collect();
+        for (builder, decrypter, name) in [
+            (aws_lc(), software(), "AWS-LC to software"),
+            (software(), aws_lc(), "software to AWS-LC"),
+        ] {
+            let ci = EncryptedDataBuilder::new(MESSAGE, &key, builder.content_encryptor(alg))
+                .build_content_info(&mut rng())
+                .unwrap_or_else(|e| panic!("{name} {alg:?}: {e}"));
+            let (_, content) = decrypter.decrypt_encrypted_data(&ci, &key).unwrap();
+            assert_eq!(content.as_slice(), MESSAGE, "{name} {alg:?}");
+        }
+    }
+    let wrong_length = EncryptedDataBuilder::<Rng>::new(
+        MESSAGE,
+        &[0; 32],
+        aws_lc().content_encryptor(ContentEncryptionAlgorithm::Aes128Cbc),
+    )
+    .build(&mut rng());
+    assert!(
+        matches!(wrong_length, Err(certval_cms::Error::InvalidInput(_))),
+        "{wrong_length:?}"
+    );
 }

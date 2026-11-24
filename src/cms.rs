@@ -101,6 +101,65 @@ fn aead_algorithm(alg: ContentEncryptionAlgorithm) -> Option<&'static aead::Algo
     }
 }
 
+/// Encrypts `plaintext` under `key` with `alg`, the IV or nonce generated inside AWS-LC.
+fn encrypt(
+    alg: ContentEncryptionAlgorithm,
+    key: Zeroizing<Vec<u8>>,
+    plaintext: &[u8],
+    aad: Option<&[u8]>,
+) -> Result<ContentEncryptionOutput> {
+    if aad.is_some() && !alg.is_authenticated() {
+        return Err(Error::InvalidInput(String::from(
+            "associated data given for an algorithm that does not authenticate",
+        )));
+    }
+    let encrypted = if let Some(algorithm) = aead_algorithm(alg) {
+        let sealing = RandomizedNonceKey::new(algorithm, &key)
+            .map_err(|_| declined("make a GCM key with a nonce it generates"))?;
+        let mut ciphertext = plaintext.to_vec();
+        let (nonce, tag) = sealing
+            .seal_in_place_separate_tag(Aad::from(aad.unwrap_or_default()), &mut ciphertext)
+            .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
+        let params = GcmParameters {
+            nonce: OctetString::new(nonce.as_ref().as_slice())?,
+            icv_len: GCM_TAG_LEN as u8,
+        };
+        ContentEncryptionOutput {
+            ciphertext,
+            key,
+            algorithm: AlgorithmIdentifierOwned {
+                oid: alg.oid(),
+                parameters: Some(Any::encode_from(&params)?),
+            },
+            tag: Some(tag.as_ref().to_vec()),
+        }
+    } else if let Some(algorithm) = cipher_algorithm(alg) {
+        let encrypting = UnboundCipherKey::new(algorithm, &key)
+            .and_then(PaddedBlockEncryptingKey::cbc_pkcs7)
+            .map_err(|_| declined("make a CBC key"))?;
+        let mut ciphertext = plaintext.to_vec();
+        let context = encrypting
+            .encrypt(&mut ciphertext)
+            .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
+        let iv: &[u8] = (&context)
+            .try_into()
+            .map_err(|_| Error::Crypto(String::from("no IV")))?;
+        ContentEncryptionOutput {
+            ciphertext,
+            key,
+            algorithm: AlgorithmIdentifierOwned {
+                oid: alg.oid(),
+                parameters: Some(Any::new(Tag::OctetString, iv)?),
+            },
+            tag: None,
+        }
+    } else {
+        return Err(Error::Unrecognized);
+    };
+    trace!("AWS-LC encrypted content with {alg:?}");
+    Ok(encrypted)
+}
+
 impl EncryptContent for AwsLcCrypto {
     /// AES-CBC and AES-GCM by AWS-LC, the key from AWS-LC's generator and the IV or nonce generated
     /// inside AWS-LC. AES-192-GCM, for which AWS-LC does not generate the nonce itself, is declined.
@@ -111,57 +170,26 @@ impl EncryptContent for AwsLcCrypto {
         plaintext: &[u8],
         aad: Option<&[u8]>,
     ) -> Result<ContentEncryptionOutput> {
-        if aad.is_some() && !alg.is_authenticated() {
-            return Err(Error::InvalidInput(String::from(
-                "associated data given for an algorithm that does not authenticate",
+        encrypt(alg, random(alg.key_len())?, plaintext, aad)
+    }
+
+    /// As [`encrypt_content`](Self::encrypt_content), under `key`.
+    fn encrypt_content_with_key(
+        &self,
+        _env: &CmsEnvironment,
+        alg: ContentEncryptionAlgorithm,
+        key: &[u8],
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<ContentEncryptionOutput> {
+        if key.len() != alg.key_len() {
+            return Err(Error::InvalidInput(format!(
+                "a key of {} octets for {alg:?}, which takes {}",
+                key.len(),
+                alg.key_len()
             )));
         }
-        let key = random(alg.key_len())?;
-        let encrypted = if let Some(algorithm) = aead_algorithm(alg) {
-            let sealing = RandomizedNonceKey::new(algorithm, &key)
-                .map_err(|_| declined("make a GCM key with a nonce it generates"))?;
-            let mut ciphertext = plaintext.to_vec();
-            let (nonce, tag) = sealing
-                .seal_in_place_separate_tag(Aad::from(aad.unwrap_or_default()), &mut ciphertext)
-                .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
-            let params = GcmParameters {
-                nonce: OctetString::new(nonce.as_ref().as_slice())?,
-                icv_len: GCM_TAG_LEN as u8,
-            };
-            ContentEncryptionOutput {
-                ciphertext,
-                key,
-                algorithm: AlgorithmIdentifierOwned {
-                    oid: alg.oid(),
-                    parameters: Some(Any::encode_from(&params)?),
-                },
-                tag: Some(tag.as_ref().to_vec()),
-            }
-        } else if let Some(algorithm) = cipher_algorithm(alg) {
-            let encrypting = UnboundCipherKey::new(algorithm, &key)
-                .and_then(PaddedBlockEncryptingKey::cbc_pkcs7)
-                .map_err(|_| declined("make a CBC key"))?;
-            let mut ciphertext = plaintext.to_vec();
-            let context = encrypting
-                .encrypt(&mut ciphertext)
-                .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
-            let iv: &[u8] = (&context)
-                .try_into()
-                .map_err(|_| Error::Crypto(String::from("no IV")))?;
-            ContentEncryptionOutput {
-                ciphertext,
-                key,
-                algorithm: AlgorithmIdentifierOwned {
-                    oid: alg.oid(),
-                    parameters: Some(Any::new(Tag::OctetString, iv)?),
-                },
-                tag: None,
-            }
-        } else {
-            return Err(Error::Unrecognized);
-        };
-        trace!("AWS-LC encrypted content with {alg:?}");
-        Ok(encrypted)
+        encrypt(alg, Zeroizing::new(key.to_vec()), plaintext, aad)
     }
 }
 
