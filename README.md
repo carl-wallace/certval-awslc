@@ -126,6 +126,12 @@ What AWS-LC does not offer is declined, and the next implementation registered a
   takes it.
 - **ML-DSA signing**, which this provider does not yet do.
 
+The same key transport, key agreement and key wrap serve cms's own recipient builders, without a
+`CmsEnvironment`: `AwsLcKeyEncryptor` is the key encryption `KeyTransRecipientInfoBuilder` takes,
+and `AwsLcKeyAgreement` and `AwsLcKeyWrap` are the key agreement and key wrap
+`KeyAgreeRecipientInfoBuilder` takes. `AwsLcKeyAgreement` performs the ECDH in AWS-LC and derives
+the key-encryption key with cms's X9.63 KDF, in process; `AwsLcKeyWrap` declines AES-192.
+
 ## Testing
 
 `cargo test` runs the unit tests and the signature tests with no setup. The signature tests verify
@@ -149,7 +155,8 @@ With the `cms` feature, the CMS tests cross the provider with certval-cms's Rust
 both directions, with nothing registered to fall back to: what software builds or signs, AWS-LC
 decrypts or verifies, and the reverse. They cover every key transport algorithm with AES-CBC and
 AES-GCM content, ECDH on each curve with each KDF hash and key wrap, ML-KEM with each parameter set,
-KDF and key wrap, and each signing algorithm in the table above.
+KDF and key wrap, and each signing algorithm in the table above. Key transport and key agreement
+are also built through cms's own recipient builders with this crate's types, and software decrypts.
 
 ```sh
 export EX=../rust-pki/certval/tests/examples

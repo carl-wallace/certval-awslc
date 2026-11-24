@@ -7,6 +7,9 @@ an increase to the minimum supported Rust version is not treated as a breaking c
 ### Added
 - With `cms`, `AwsLcCrypto` implements certval-cms's `EncryptContent::encrypt_content_with_key`,
   so EncryptedData under a given key is encrypted through AWS-LC, its FIPS module included.
+- With `cms`, `AwsLcKeyEncryptor`, `AwsLcKeyAgreement` and `AwsLcKeyWrap` implement cms's key
+  encryption, key agreement and key wrap traits, so cms's own `KeyTransRecipientInfoBuilder` and
+  `KeyAgreeRecipientInfoBuilder` perform RSA key transport, ECDH and AES key wrap through AWS-LC.
 
 ## [0.1.0-rc.1] - 2026-11-12
 

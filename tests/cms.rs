@@ -5,7 +5,9 @@
 //! Every key transport algorithm with AES-CBC and AES-GCM content; ECDH on P-256, P-384 and P-521
 //! with each KDF hash, each wrap AWS-LC offers (AES-128 and AES-256), and user keying material;
 //! ML-KEM with each parameter set, KDF and wrap; and signing with RSA PKCS #1 v1.5 and RSASSA-PSS
-//! and the ECDSA curve and hash pairings AWS-LC offers; and EncryptedData under a given key.
+//! and the ECDSA curve and hash pairings AWS-LC offers; and EncryptedData under a given key. Key
+//! transport and key agreement also go through cms's own recipient builders, with
+//! `AwsLcKeyEncryptor`, `AwsLcKeyAgreement` and `AwsLcKeyWrap`, and software decrypts.
 
 #![cfg(feature = "cms")]
 
@@ -16,6 +18,7 @@ use std::time::Duration;
 use aws_lc_rs::kem::{DecapsulationKey, ML_KEM_1024, ML_KEM_512, ML_KEM_768};
 use certval::PkiEnvironment;
 use certval_awslc::{AwsLcCrypto, AwsLcRecipientKey, AwsLcSigningKey};
+use certval_awslc::{AwsLcKeyAgreement, AwsLcKeyEncryptor, AwsLcKeyWrap};
 use certval_cms::{
     content_info, rsa_pss, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm,
     DigestAlgorithm, EncryptedDataBuilder, GcmParameters, KdfAlgorithm, KemRecipient,
@@ -23,7 +26,10 @@ use certval_cms::{
     KeyWrapAlgorithm, RecipientCredential, SignedDataBuilder, Signer, SignerPolicy,
     SigningCredential, SoftwareRecipientKey, SoftwareSigningKey,
 };
-use cms::builder::{EnvelopedDataBuilder, RecipientInfoBuilder};
+use cms::builder::{
+    EnvelopedDataBuilder, KeyAgreeRecipientInfoBuilder, KeyTransRecipientInfoBuilder,
+    RecipientInfoBuilder,
+};
 use cms::content_info::ContentInfo;
 use const_oid::db::fips203::{ID_ALG_ML_KEM_1024, ID_ALG_ML_KEM_512, ID_ALG_ML_KEM_768};
 use const_oid::db::rfc5912::ID_CE_SUBJECT_KEY_IDENTIFIER;
@@ -325,6 +331,122 @@ fn key_agreement(key: Key, curve: &str) {
                 );
             }
         }
+    }
+}
+
+/// The key agreement recipient identifier for `cert`.
+fn key_agree_rid(cert: &Certificate) -> cms::enveloped_data::KeyAgreeRecipientIdentifier {
+    use cms::enveloped_data::{KeyAgreeRecipientIdentifier, RecipientIdentifier};
+    match certval_cms::recipient_identifier(cert).unwrap() {
+        RecipientIdentifier::IssuerAndSerialNumber(iasn) => {
+            KeyAgreeRecipientIdentifier::IssuerAndSerialNumber(iasn)
+        }
+        RecipientIdentifier::SubjectKeyIdentifier(skid) => {
+            KeyAgreeRecipientIdentifier::RKeyId(cms::enveloped_data::RecipientKeyIdentifier {
+                subject_key_identifier: skid,
+                date: None,
+                other: None,
+            })
+        }
+    }
+}
+
+/// Key agreement through cms's own `KeyAgreeRecipientInfoBuilder`, with an `AwsLcKeyAgreement` and
+/// an `AwsLcKeyWrap`, for each scheme, wrap and user keying material; software decrypts.
+fn key_agreement_through_cms_builder(key: Key, curve: &str) {
+    let (software, platform) = (software(), aws_lc());
+    let (_, software_key) = key.recipient_credentials();
+    for alg in [
+        KeyAgreementAlgorithm::EcdhSha256,
+        KeyAgreementAlgorithm::EcdhSha384,
+        KeyAgreementAlgorithm::EcdhSha512,
+        KeyAgreementAlgorithm::EcdhCofactorSha256,
+        KeyAgreementAlgorithm::EcdhCofactorSha384,
+        KeyAgreementAlgorithm::EcdhCofactorSha512,
+    ] {
+        for wrap in WRAPS {
+            for ukm in [None, Some(b"user keying material".to_vec())] {
+                let name = format!("cms builder {curve} {alg:?} {wrap:?} ukm={}", ukm.is_some());
+                let r = KeyAgreeRecipientInfoBuilder::new(
+                    ukm.map(|ukm| OctetString::new(ukm).unwrap()),
+                    key_agree_rid(&key.cert),
+                    AwsLcKeyAgreement::from_certificate(&key.cert, alg),
+                    AwsLcKeyWrap::new(wrap),
+                )
+                .unwrap();
+                let ci = envelop(&platform, ContentEncryptionAlgorithm::Aes128Cbc, r);
+                assert_decrypts(&software, &ci, &software_key, &name);
+            }
+        }
+    }
+}
+
+#[test]
+fn key_agreement_through_cms_builder_on_p256() {
+    key_agreement_through_cms_builder(ec_key!(p256), "P-256");
+}
+
+#[test]
+fn key_agreement_through_cms_builder_on_p384() {
+    key_agreement_through_cms_builder(ec_key!(p384), "P-384");
+}
+
+#[test]
+fn key_agreement_through_cms_builder_on_p521() {
+    key_agreement_through_cms_builder(ec_key!(p521), "P-521");
+}
+
+/// AES-192 key wrap, which AWS-LC does not offer, fails the build rather than wrapping elsewhere.
+#[test]
+fn aes_192_key_wrap_through_cms_builder_is_declined() {
+    let key = ec_key!(p256);
+    let r = KeyAgreeRecipientInfoBuilder::new(
+        None,
+        key_agree_rid(&key.cert),
+        AwsLcKeyAgreement::from_certificate(&key.cert, KeyAgreementAlgorithm::EcdhSha256),
+        AwsLcKeyWrap::new(KeyWrapAlgorithm::Aes192),
+    )
+    .unwrap();
+    let env = aws_lc();
+    let built = EnvelopedDataBuilder::new(
+        None,
+        MESSAGE,
+        env.content_encryptor(ContentEncryptionAlgorithm::Aes128Cbc),
+        None,
+    )
+    .unwrap()
+    .add_recipient_info(r)
+    .unwrap()
+    .build_with_rng(&mut rng());
+    assert!(built.is_err());
+}
+
+/// Key transport through cms's own `KeyTransRecipientInfoBuilder` with an `AwsLcKeyEncryptor`, for
+/// each algorithm; software decrypts.
+#[test]
+fn key_transport_through_cms_builder() {
+    let (software, platform) = (software(), aws_lc());
+    let key = Key::rsa();
+    let (_, software_key) = key.recipient_credentials();
+    for alg in [
+        KeyTransportAlgorithm::RsaPkcs1v15,
+        KeyTransportAlgorithm::RsaOaepSha1,
+        KeyTransportAlgorithm::RsaOaepSha256,
+        KeyTransportAlgorithm::RsaOaepSha384,
+        KeyTransportAlgorithm::RsaOaepSha512,
+    ] {
+        let r = KeyTransRecipientInfoBuilder::new(
+            certval_cms::recipient_identifier(&key.cert).unwrap(),
+            AwsLcKeyEncryptor::from_certificate(&key.cert, alg),
+        )
+        .unwrap();
+        let ci = envelop(&platform, ContentEncryptionAlgorithm::Aes128Cbc, r);
+        assert_decrypts(
+            &software,
+            &ci,
+            &software_key,
+            &format!("cms builder {alg:?}"),
+        );
     }
 }
 

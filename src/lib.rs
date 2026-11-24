@@ -59,8 +59,12 @@
 mod algorithm;
 #[cfg(feature = "cms")]
 mod cms;
+#[cfg(feature = "cms")]
+mod cms_builders;
 mod provider;
 
 #[cfg(feature = "cms")]
 pub use cms::{AwsLcKey, AwsLcRecipientKey, AwsLcSigningKey};
+#[cfg(feature = "cms")]
+pub use cms_builders::{AwsLcKeyAgreement, AwsLcKeyEncryptor, AwsLcKeyWrap};
 pub use provider::AwsLcCrypto;

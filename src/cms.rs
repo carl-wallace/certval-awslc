@@ -276,24 +276,33 @@ impl EncryptKeyTransport for AwsLcCrypto {
         spki: &SubjectPublicKeyInfoOwned,
         cek: &[u8],
     ) -> Result<Vec<u8>> {
-        if spki.algorithm.oid != RSA_ENCRYPTION {
-            return Err(Error::Unrecognized);
-        }
-        let oaep = oaep(alg)?;
-        let key = PublicEncryptingKey::from_der(&spki.to_der()?)
-            .map_err(|_| declined("decode an RSA key"))?;
-        let mut output = vec![0u8; key.key_size_bytes()];
-        let written = match oaep {
-            Some(oaep) => OaepPublicEncryptingKey::new(key)
-                .and_then(|k| k.encrypt(oaep, cek, &mut output, None).map(|c| c.len())),
-            None => Pkcs1PublicEncryptingKey::new(key)
-                .and_then(|k| k.encrypt(cek, &mut output).map(|c| c.len())),
-        }
-        .map_err(|_| declined("perform key transport"))?;
-        output.truncate(written);
-        trace!("AWS-LC performed key transport with {alg:?}");
-        Ok(output)
+        rsa_encrypt(alg, spki, cek)
     }
+}
+
+/// Encrypts `cek` to the `rsaEncryption` key in `spki` with `alg`.
+pub(crate) fn rsa_encrypt(
+    alg: KeyTransportAlgorithm,
+    spki: &SubjectPublicKeyInfoOwned,
+    cek: &[u8],
+) -> Result<Vec<u8>> {
+    if spki.algorithm.oid != RSA_ENCRYPTION {
+        return Err(Error::Unrecognized);
+    }
+    let oaep = oaep(alg)?;
+    let key = PublicEncryptingKey::from_der(&spki.to_der()?)
+        .map_err(|_| declined("decode an RSA key"))?;
+    let mut output = vec![0u8; key.key_size_bytes()];
+    let written = match oaep {
+        Some(oaep) => OaepPublicEncryptingKey::new(key)
+            .and_then(|k| k.encrypt(oaep, cek, &mut output, None).map(|c| c.len())),
+        None => Pkcs1PublicEncryptingKey::new(key)
+            .and_then(|k| k.encrypt(cek, &mut output).map(|c| c.len())),
+    }
+    .map_err(|_| declined("perform key transport"))?;
+    output.truncate(written);
+    trace!("AWS-LC performed key transport with {alg:?}");
+    Ok(output)
 }
 
 /// AWS-LC's ECDH algorithm for the named curve an EC public key is on.
@@ -323,19 +332,8 @@ impl EncryptKeyAgreement for AwsLcCrypto {
         ukm: Option<&[u8]>,
         cek: &[u8],
     ) -> Result<KeyAgreeOutput> {
-        let algorithm = ecdh_algorithm(spki).ok_or(Error::Unrecognized)?;
-        let ephemeral = EphemeralPrivateKey::generate(algorithm, &SystemRandom::new())
-            .map_err(|_| declined("generate an ephemeral key"))?;
-        let ephemeral_public_key = ephemeral
-            .compute_public_key()
-            .map_err(|_| declined("compute an ephemeral public key"))?
-            .as_ref()
-            .to_vec();
-        let peer = UnparsedPublicKey::new(algorithm, spki.subject_public_key.raw_bytes());
-        let encrypted_key =
-            agreement::agree_ephemeral(ephemeral, peer, Error::Unrecognized, |z| {
-                wrap_with_ecdh_secret(alg, wrap, z, ukm, cek)
-            })?;
+        let (ephemeral_public_key, z) = ecdh(spki)?;
+        let encrypted_key = wrap_with_ecdh_secret(alg, wrap, &z, ukm, cek)?;
         trace!("AWS-LC performed key agreement with {alg:?} and {wrap:?}");
         Ok(KeyAgreeOutput {
             ephemeral_public_key,
@@ -389,6 +387,35 @@ fn hkdf_kek(
 }
 
 /// AWS-LC's AES key wrap cipher; AES-192 is declined.
+/// Ephemeral-static ECDH with the EC key in `spki` by AWS-LC: the ephemeral public key, an
+/// uncompressed SEC1 point, and the shared secret.
+pub(crate) fn ecdh(spki: &SubjectPublicKeyInfoOwned) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>)> {
+    let algorithm = ecdh_algorithm(spki).ok_or(Error::Unrecognized)?;
+    let ephemeral = EphemeralPrivateKey::generate(algorithm, &SystemRandom::new())
+        .map_err(|_| declined("generate an ephemeral key"))?;
+    let ephemeral_public_key = ephemeral
+        .compute_public_key()
+        .map_err(|_| declined("compute an ephemeral public key"))?
+        .as_ref()
+        .to_vec();
+    let peer = UnparsedPublicKey::new(algorithm, spki.subject_public_key.raw_bytes());
+    let z = agreement::agree_ephemeral(ephemeral, peer, Error::Unrecognized, |z| {
+        Ok(Zeroizing::new(z.to_vec()))
+    })?;
+    Ok((ephemeral_public_key, z))
+}
+
+/// Wraps `cek` under `kek` with AES key wrap by AWS-LC, which offers 128- and 256-bit KEKs.
+pub(crate) fn aes_key_wrap(wrap: KeyWrapAlgorithm, kek: &[u8], cek: &[u8]) -> Result<Vec<u8>> {
+    let mut wrapped = vec![0u8; cek.len() + 8];
+    let len = aes_kek(wrap, kek)?
+        .wrap(cek, &mut wrapped)
+        .map_err(|_| Error::Crypto(String::from("key wrap failed")))?
+        .len();
+    wrapped.truncate(len);
+    Ok(wrapped)
+}
+
 fn aes_kek(wrap: KeyWrapAlgorithm, kek: &[u8]) -> Result<AesKek> {
     let cipher = match wrap {
         KeyWrapAlgorithm::Aes128 => &aws_lc_rs::key_wrap::AES_128,
@@ -416,12 +443,7 @@ impl EncryptKem for AwsLcCrypto {
             .map_err(|_| declined("decode an ML-KEM key"))?;
         let (ciphertext, ss) = key.encapsulate().map_err(|_| declined("encapsulate"))?;
         let kek = hkdf_kek(kdf, wrap, ss.as_ref(), ukm)?;
-        let mut encrypted_key = vec![0u8; cek.len() + 8];
-        let len = aes_kek(wrap, &kek)?
-            .wrap(cek, &mut encrypted_key)
-            .map_err(|_| Error::Crypto(String::from("key wrap failed")))?
-            .len();
-        encrypted_key.truncate(len);
+        let encrypted_key = aes_key_wrap(wrap, &kek, cek)?;
         trace!("AWS-LC performed a KEM with {kdf:?} and {wrap:?}");
         Ok(KemOutput {
             kem_ct: ciphertext.as_ref().to_vec(),
